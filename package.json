@@ -1,0 +1,16 @@
+{
+  "name": "termius-mcp",
+  "version": "0.4.0",
+  "private": true,
+  "description": "Offline JavaScript tests for the Termius MCP adapter",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@xterm/headless": "5.5.0"
+  }
+}

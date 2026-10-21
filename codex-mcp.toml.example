@@ -1,0 +1,14 @@
+# Replace BOTH /absolute/path/to/termius-mcp placeholders with your checkout path.
+# Merge this table into ~/.codex/config.toml; preserve existing settings.
+[mcp_servers.termius]
+command = "/absolute/path/to/termius-mcp/.venv/bin/python"
+args = ["/absolute/path/to/termius-mcp/server.py"]
+startup_timeout_sec = 20
+tool_timeout_sec = 660
+enabled_tools = ["list_hosts", "list_terminal_sessions", "read_terminal", "connect_host", "claim_terminal", "release_terminal", "run_command", "send_text", "send_key", "switch_terminal", "close_terminal", "list_sftp_sessions", "sftp_upload", "sftp_transfer_status"]
+
+[mcp_servers.termius.env]
+TERMIUS_CDP_PORT = "9222"
+TERMIUS_HOSTKEY = "ask"
+# Optional: restrict connections to these saved host labels.
+# TERMIUS_CONNECT_ALLOW = "dev-box,staging-box"
