@@ -99,7 +99,8 @@ class FakeBridge:
         self.captures[token] = (tid, self.terms[tid].cursor_row)
         return True
 
-    def _readCapture(self, tid, token):
+    def _readCapture(self, tid, token, known=None, head=None, tail=None):
+        # Like a terminal without a write counter: always a full, uncapped read.
         owner, start = self.captures[token]
         assert owner == tid
         return {**self._read(tid, start + 1), "history_lost": False}

@@ -83,6 +83,56 @@ def test_lock_dir_is_created_private(tmp_path, monkeypatch):
     assert oct(fresh.stat().st_mode & 0o777) == "0o700"
 
 
+def test_lock_dir_open_to_others_is_refused(tmp_path, monkeypatch):
+    """A pre-existing directory others can enter (e.g. created first by another local
+    user under /tmp) is refused rather than used."""
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o755)
+    monkeypatch.setattr(server, "LOCK_DIR", shared)
+    with pytest.raises(RuntimeError, match="mode 0700"):
+        with server._claims_mutex():
+            pass
+    with pytest.raises(RuntimeError, match="mode 0700"):
+        server._write_claim(TAB)
+    assert list(shared.iterdir()) == []
+
+
+def test_lock_dir_symlink_is_refused(tmp_path, monkeypatch):
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    monkeypatch.setattr(server, "LOCK_DIR", link)
+    with pytest.raises(RuntimeError, match="not a symlink"):
+        with server._claims_mutex():
+            pass
+    assert list(real.iterdir()) == []
+
+
+def test_planted_symlinks_are_never_written_through(lockdir, tmp_path):
+    """Regression: claim and opened-tab records were written via fixed temp names
+    (<tab>.tmp / <tab>.otmp) that followed a planted symlink and overwrote its target."""
+    victim = tmp_path / "victim.txt"
+    victim.write_text("victim")
+    for name in (f"{TAB}.tmp", f"{TAB}.otmp"):
+        (lockdir / name).symlink_to(victim)
+    server._write_claim(TAB)
+    server._mark_opened(TAB)
+    assert victim.read_text() == "victim"
+    assert server._mine(server._read_claim(TAB))
+    assert server._read_opened(TAB)["token"] == server.OWNER["token"]
+
+
+def test_symlinked_claim_file_is_refused_not_followed(lockdir, tmp_path):
+    forged = tmp_path / "forged.json"
+    forged.write_text(json.dumps({**server.OWNER, "since": time.time(), "last": time.time()}))
+    server._claim_path(TAB).symlink_to(forged)
+    with pytest.raises(OSError):
+        server._require_claim(S)
+    assert json.loads(forged.read_text())["token"] == server.OWNER["token"]
+
+
 # ---- per-tab call lock ----------------------------------------------------
 
 def test_second_input_call_on_same_tab_is_refused_not_queued(lockdir):
@@ -152,3 +202,27 @@ def test_lock_survives_holder_crash(lockdir):
         async with server._tab_lock(S):
             return True
     assert run(go())
+
+
+# ---- owner label --------------------------------------------------------------
+
+def _owner_session(label):
+    env = {k: v for k, v in os.environ.items() if k != "TERMIUS_MCP_SESSION_LABEL"}
+    env["TMPDIR"] = "/var/folders/xx/yy/T/"          # macOS shape: basename "T" for everyone
+    if label is not None:
+        env["TERMIUS_MCP_SESSION_LABEL"] = label
+    res = subprocess.run([sys.executable, "-W", "ignore", "-c",
+                          "import server; print(server.OWNER['session'])"],
+                         cwd=os.path.dirname(server.__file__), env=env, timeout=60,
+                         capture_output=True, text=True, check=True)
+    return res.stdout.strip().splitlines()[-1]
+
+
+def test_owner_label_names_the_client_process_not_tmpdir():
+    assert _owner_session(None) == f"client-pid-{os.getpid()}"
+
+
+def test_owner_label_can_be_set_and_is_bounded():
+    assert _owner_session("codex: deploy box") == "codex: deploy box"
+    assert _owner_session("x" * 200) == "x" * 64
+    assert _owner_session("   ") == f"client-pid-{os.getpid()}"

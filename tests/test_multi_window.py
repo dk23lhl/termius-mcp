@@ -94,3 +94,44 @@ def test_no_warning_with_one_window(monkeypatch, lockdir):
     t = FakeTerm("aaaa1111-0000-0000-0000-000000000001")
     monkeypatch.setattr(server, "Page", lambda: FakeBridge([t]))
     assert "WARNING" not in run(server.list_terminal_sessions())
+
+
+# ---- running-version check ---------------------------------------------------
+
+UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+      "Termius/{} Chrome/106.0.5249.199 Electron/21.4.4 Safari/537.36")
+
+
+class Connected(Exception):
+    """Raised instead of opening the websocket: the checks before it passed."""
+
+
+def cdp(monkeypatch, user_agent):
+    pages = {"/json/version": {"Browser": "Chrome/106.0.5249.199", "User-Agent": user_agent},
+             "/json/list": [target(3)]}
+
+    def urlopen(url, *a, **k):
+        return FakeResponse(next(v for p, v in pages.items() if url.endswith(p)))
+
+    async def connect(*a, **k):
+        raise Connected()
+    monkeypatch.setattr(server.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(server.websockets, "connect", connect)
+
+
+def test_supported_running_version_proceeds_to_connect(monkeypatch):
+    cdp(monkeypatch, UA.format("9.38.1"))
+    with pytest.raises(Connected):
+        run(server.Page().__aenter__())
+
+
+@pytest.mark.parametrize("ua, message", [
+    (UA.format("9.39.0"), "running Termius reports 9.39.0"),
+    (UA.format("9.38.10"), "running Termius reports 9.38.10"),
+    ("Mozilla/5.0 HeadlessChrome/120.0.0.0 Safari/537.36", "does not report a Termius"),
+])
+def test_other_running_versions_are_refused_before_any_connection(monkeypatch, ua, message):
+    """The running app decides, not the bundle on disk (which may already be updated)."""
+    cdp(monkeypatch, ua)
+    with pytest.raises(RuntimeError, match=message):
+        run(server.Page().__aenter__())

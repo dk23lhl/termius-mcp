@@ -174,6 +174,31 @@ def test_run_command_refuses_when_text_is_already_typed(bridge, term):
     assert term.sent == []
 
 
+@pytest.mark.parametrize("prompt", [
+    ">", "  >", ">>", ">>>", "dquote>", "heredoc>", "for if>",
+    "postgres=#", "app=>", "app-#", "app(#", "mysql>", "MariaDB [(none)]>", "    ->",
+    "sqlite>", "   ...>", "irb(main):001:0>", "[1] pry(main)>", "127.0.0.1:6379>",
+])
+def test_run_command_refuses_repl_and_continuation_prompts(bridge, term, prompt):
+    """These end in a prompt symbol, but typing a shell command there would feed another
+    interpreter or an unfinished shell line (open quote, heredoc)."""
+    term.prompt = prompt
+    term.lines[-1] = prompt + " "
+    claim()
+    with pytest.raises(RuntimeError, match="not at a shell prompt"):
+        run(server.run_command("echo hi", LOCAL))
+    assert term.sent == []
+
+
+@pytest.mark.parametrize("prompt", [
+    "me@box %", "deploy@web-1 $", "root@host:~#", "[root@host ~]#", "bash-5.2#", "$",
+    "PS C:\\Users\\me>", "me@host ~>", "❯", "➜  repo git:(main) ✗",
+])
+def test_shell_prompts_are_still_accepted(prompt):
+    read = {"prompt_line": prompt + " ", "before_cursor": prompt + " "}
+    assert server._at_prompt(read)
+
+
 def test_run_command_rejects_multiline_commands(bridge, term):
     claim()
     for bad in ("echo a\necho b", "echo a\recho b"):
@@ -258,3 +283,13 @@ def test_read_terminal_caps_long_output(bridge, term):
 
 def test_read_terminal_needs_no_claim(bridge):
     assert run(server.read_terminal(LOCAL))
+
+
+def test_run_command_with_very_long_lines_stays_within_the_budget(bridge, term):
+    term.outputs["cat blob"] = [f"{i:03d}" + "Z" * 5000 for i in range(300)]
+    claim()
+    out = run(server.run_command("cat blob", LOCAL, timeout=5))
+    body = out.split("\n", 2)[2]                       # after the command and status lines
+    assert len(body) <= server.MAX_OUTPUT_CHARS
+    assert "more characters in this line" in body and "lines omitted" in body
+    assert body.splitlines()[-1].startswith("299")
