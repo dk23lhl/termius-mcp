@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "termius-mcp"
+version = "0.5.0.dev0"
+description = "MCP server for an already-open macOS Termius 9.38.1, over its local debugging port"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+# Same pins as the inline script header in server.py and requirements.lock.
+dependencies = ["mcp==1.27.0", "websockets==17.2"]
+classifiers = ["Operating System :: MacOS", "Programming Language :: Python :: 3"]
+
+[project.urls]
+Repository = "https://github.com/dk23lhl/termius-mcp"
+
+[project.scripts]
+termius-mcp = "termius_mcp.server:main"
+
+# The checkout stays flat (server.py next to the two renderer scripts it reads, as
+# existing client configurations expect); the wheel places the same three files in a
+# termius_mcp package. server.py finds the scripts next to itself in both layouts.
+[tool.hatch.build.targets.wheel]
+bypass-selection = true
+
+[tool.hatch.build.targets.wheel.force-include]
+"server.py" = "termius_mcp/server.py"
+"bridge.js" = "termius_mcp/bridge.js"
+"native.js" = "termius_mcp/native.js"
+
+# `uvx --from <checkout>` (and the Claude Code plugin) reuse a cached build until a
+# cache key changes; by default only pyproject.toml counts, so an edited server.py or
+# renderer script would keep running the old build.
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { file = "server.py" }, { file = "bridge.js" }, { file = "native.js" }]
+
+[tool.hatch.build.targets.sdist]
+include = ["server.py", "bridge.js", "native.js", "README.md", "LICENSE", "requirements*.lock"]

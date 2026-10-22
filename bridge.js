@@ -139,8 +139,85 @@
   // Markers move with xterm's bounded scrollback. A disposed marker means earlier
   // output may be lost; returning retained text with that fact is better than an
   // empty read from an obsolete absolute row. Never enable proposed APIs ourselves.
+  // The anchor sits on the FIRST row of the cursor's logical line (prompt + echo), and
+  // output starts after that whole logical line, however it is wrapped now. A marker
+  // alone does not survive every resize: when narrowing rewraps the history past the
+  // scrollback limit, xterm trims rows and can leave the marker on an older row, then
+  // dispose it when widening again. A logical line's text does survive rewrapping, so
+  // after a resize the anchor is checked, and if need be found again, by its text.
   const captures = new Map();
-  const releaseCapture = c => { c.marker.dispose(); if (c.resize) c.resize.dispose(); };
+  const releaseCapture = c => {
+    c.marker.dispose();
+    if (c.resize) c.resize.dispose();
+    if (c.written) c.written.dispose();
+  };
+  // Everything that can change what readCapture returns: a parsed write, a resize, the
+  // buffer's length or scroll base, the cursor, the anchor. Only usable with a write
+  // counter: without one, text can change while all the rest stays put.
+  const captureSig = c => {
+    if (c.writes == null) return null;
+    const b = c.terminal.buffer.active;
+    return [c.writes, c.resizes, b.length, b.baseY, b.cursorX, b.cursorY,
+      c.marker.isDisposed ? -1 : c.marker.line, c.unresolved || ''].join(':');
+  };
+  // Compare the complete rendered output before reducing the transfer. A parsed
+  // write is only a cache invalidation: it may change an omitted middle line, or
+  // change no text at all. Keep the original unchanged-text quiet-window semantics
+  // in both cases, including terminals without a parsed-write event. Direct text
+  // comparison avoids collisions; the snapshot stays in this capture's renderer.
+  const outputRevision = (c, lines) => {
+    const normalized = lines.map(line => line.trimEnd());
+    while (normalized.length && !normalized[normalized.length - 1]) normalized.pop();
+    if (!c.outputLines || c.outputLines.length !== normalized.length
+        || normalized.some((line, i) => line !== c.outputLines[i])) {
+      c.outputLines = normalized;
+      c.revision++;
+    }
+    return c.revision;
+  };
+  // Trailing empty rows dropped, then the first `head` and last `tail` logical lines;
+  // the middle is only counted. The server formats exactly what it would from the full
+  // list, without receiving thousands of lines four times a second.
+  const capLines = (lines, head, tail) => {
+    let n = lines.length;
+    while (n && !lines[n - 1].trimEnd()) n--;
+    if (!(head >= 0 && tail >= 0) || n <= head + tail) return {lines: lines.slice(0, n), head: n, omitted: 0};
+    return {lines: [...lines.slice(0, head), ...lines.slice(n - tail, n)], head, omitted: n - head - tail};
+  };
+  const logicalStart = (b, row) => {
+    while (row > 0 && b.getLine(row) && b.getLine(row).isWrapped) row--;
+    return row;
+  };
+  const afterLogicalLine = (b, row) => {
+    let next = row + 1;
+    while (next < b.length && b.getLine(next) && b.getLine(next).isWrapped) next++;
+    return next;
+  };
+  const lineText = (b, row) => (logical(b, row, afterLogicalLine(b, row))[0] || '').trimEnd();
+  const pin = (terminal, row) => {
+    const b = terminal.buffer.active;
+    const marker = terminal.registerMarker(row - (b.baseY + b.cursorY));
+    if (!marker || marker.isDisposed) throw new Error('marker tracking unavailable');
+    return marker;
+  };
+  const anchorAtCursor = terminal => {
+    const b = terminal.buffer.active, row = logicalStart(b, b.baseY + b.cursorY);
+    return {marker: pin(terminal, row), text: lineText(b, row)};
+  };
+  // After a resize, use only a unique text match. A misplaced marker can land on
+  // identical older history, so matching text beneath it does not prove identity.
+  // No match or several matches are reported instead of guessing an output boundary.
+  const findAnchor = c => {
+    const b = c.terminal.buffer.active;
+    const rows = [];
+    for (let row = b.length - 1; row >= 0 && rows.length < 2; row--) {
+      const ln = b.getLine(row);
+      if (!ln || ln.isWrapped || !c.text.startsWith(ln.translateToString(true))) continue;
+      if (lineText(b, row) === c.text) rows.push(row);
+    }
+    if (rows.length === 1) return {row: rows[0]};
+    return {reason: rows.length ? 'ambiguous' : 'not-found'};
+  };
   const capture = (id, token) => {
     const c = captures.get(token);
     if (!c || c.id !== id) throw new Error('capture not found for this session');
@@ -185,28 +262,61 @@
       const terminal = api(id)?.terminal;
       if (!terminal || terminal.buffer.active.type !== 'normal') throw new Error('normal buffer required for capture');
       if (typeof terminal.registerMarker !== 'function') throw new Error('marker tracking unavailable');
-      const marker = terminal.registerMarker(0);
-      if (!marker || marker.isDisposed) throw new Error('marker tracking unavailable');
-      const c = {id, terminal, marker, created: Date.now(), resized: false};
-      if (typeof terminal.onResize === 'function') c.resize = terminal.onResize(() => { c.resized = true; });
+      const {marker, text} = anchorAtCursor(terminal);
+      const c = {id, terminal, marker, text, created: Date.now(), resized: false, recheck: false,
+        unresolved: null, resizes: 0, writes: null, outputLines: null, revision: 0};
+      if (typeof terminal.onResize === 'function') {
+        c.resize = terminal.onResize(() => { c.resized = true; c.recheck = true; c.resizes++; });
+      }
+      // Termius 9.38.1's xterm reports parsed writes; @xterm/headless 5.5 does not, and
+      // then every read stays a full read.
+      if (typeof terminal.onWriteParsed === 'function') {
+        c.writes = 0;
+        c.written = terminal.onWriteParsed(() => { c.writes++; });
+      }
       captures.set(token, c);
       return {token};
     },
 
     resetCapture(id, token) {
       const c = capture(id, token);
-      const marker = c.terminal.registerMarker(0);
-      if (!marker || marker.isDisposed) throw new Error('marker tracking unavailable');
+      const {marker, text} = anchorAtCursor(c.terminal);
       c.marker.dispose();
-      c.marker = marker;
-      c.resized = false;
+      Object.assign(c, {marker, text, resized: false, recheck: false, unresolved: null,
+        outputLines: null, revision: 0});
       return true;
     },
 
-    readCapture(id, token) {
-      const c = capture(id, token);
-      const lost = c.marker.isDisposed || c.resized;
-      return {...this.read(id, lost ? 0 : c.marker.line + 1), history_lost: lost};
+    // history_lost: the anchor row was trimmed from the bounded scrollback, so every
+    // retained row is newer than it. resized: rows were rewrapped; the text is intact
+    // but line breaks may differ from what the program printed. anchor_lost: after a
+    // resize the command line was not found again, or appeared more than once
+    // (anchor_reason), so only the current screen is returned, never the older history
+    // above it. That stays so for this command: later output could print the command
+    // line, and a single copy found then would be the wrong one.
+    // `known`: the sig of the caller's last full read; if nothing changed since, only
+    // {same: true} is returned. output_revision tracks complete normalized text,
+    // including omitted lines. `head`/`tail`: see capLines (omitted = full list).
+    readCapture(id, token, known, head, tail) {
+      const c = capture(id, token), b = c.terminal.buffer.active;
+      if (c.recheck && !c.unresolved) {
+        const found = findAnchor(c);
+        if (found.reason) c.unresolved = found.reason;
+        else { c.marker.dispose(); c.marker = pin(c.terminal, found.row); }
+        c.recheck = false;
+      }
+      const sig = captureSig(c);
+      if (sig != null && sig === known) return {same: true, sig};
+      if (c.unresolved) {
+        const r = this.read(id, b.baseY);
+        return {...r, ...capLines(r.lines, head, tail), history_lost: false, resized: true,
+          anchor_lost: true, anchor_reason: c.unresolved, sig,
+          output_revision: outputRevision(c, r.lines)};
+      }
+      const lost = c.marker.isDisposed;
+      const r = this.read(id, lost ? 0 : afterLogicalLine(b, c.marker.line));
+      return {...r, ...capLines(r.lines, head, tail), history_lost: lost, resized: c.resized,
+        anchor_lost: false, sig, output_revision: outputRevision(c, r.lines)};
     },
 
     stopCapture(id, token) {
@@ -283,7 +393,10 @@
       if (!a) throw new Error('terminal not found in Termius (neither mediator pool nor DOM) — switch to its tab once');
       const b = a.terminal.buffer.active;
       let start = from == null ? b.baseY : Math.max(0, from);
-      while (start > 0 && b.getLine(start) && b.getLine(start).isWrapped) start--;
+      // Only walk back from a row inside the buffer: Termius' long-lived circular buffer
+      // can return a stale row (even one flagged as wrapped) just past the end, which
+      // used to pull the command line into a capture read before any output arrived.
+      while (start > 0 && start < b.length && b.getLine(start) && b.getLine(start).isWrapped) start--;
       let pr = b.baseY + b.cursorY;
       while (pr > 0 && b.getLine(pr) && b.getLine(pr).isWrapped) pr--;
       // Text on the cursor row up to the cursor. A real shell prompt leaves the cursor

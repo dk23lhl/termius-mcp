@@ -1,0 +1,7 @@
+# Runtime dependencies plus the offline test tools, exact versions used for validation.
+-r requirements.lock
+Pygments==2.21.0
+iniconfig==2.3.1
+packaging==26.3
+pluggy==1.7.0
+pytest==8.4.2

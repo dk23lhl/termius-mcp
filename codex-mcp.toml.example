@@ -12,3 +12,8 @@ TERMIUS_CDP_PORT = "9222"
 TERMIUS_HOSTKEY = "ask"
 # Optional: restrict connections to these saved host labels.
 # TERMIUS_CONNECT_ALLOW = "dev-box,staging-box"
+# Optional: allow uploads only from these absolute directories (':'-separated).
+# Credential stores such as ~/.ssh are refused either way.
+# TERMIUS_UPLOAD_ROOTS = "/Users/me/uploads"
+# Optional: a readable name for this client in claim listings (default: client-pid-<pid>).
+# TERMIUS_MCP_SESSION_LABEL = "codex"

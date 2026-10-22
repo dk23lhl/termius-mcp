@@ -11,15 +11,23 @@ or forward the port to other hosts or make debugging a default login service.
 
 The MCP server uses stdio and opens no inbound network listener of its own. Its
 CDP client accepts only the configured `ws://127.0.0.1:<port>` endpoint and a
-Termius primary renderer URL. It rejects installed versions other than 9.38.1.
+Termius primary renderer URL. It rejects a running Termius whose CDP User-Agent
+reports a version other than 9.38.1, before injecting anything.
 These checks are compatibility and targeting checks, not authentication of other
 same-user processes.
 
 ## Tool permissions and data
 
 - Host/keychain listings return selected metadata, not password or private-key
-  fields. Terminal output can still contain secrets, host addresses or private
+  fields. `list_keychain` is not registered unless `TERMIUS_ENABLE_KEYCHAIN=1`.
+  Terminal output can still contain secrets, host addresses or private
   files printed by the user or a command. Review it before sharing transcripts.
+- `sftp_upload` refuses credential stores on the resolved local path (`~/.ssh`,
+  `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.netrc`, `~/.codex`, `~/.claude`, macOS
+  keychains and similar, plus any `.ssh`/`.gnupg` directory), even inside
+  `TERMIUS_UPLOAD_ROOTS`. That variable optionally limits uploads to listed
+  directories; a value naming no directory is refused as a configuration error.
+  Neither replaces the client's own approval of each upload.
 - `connect_host` can connect a saved host using its Termius configuration. By
   default, any saved label is eligible. `TERMIUS_CONNECT_ALLOW` limits new
   connections by label; it does not constrain existing terminal sessions or SFTP.
@@ -35,7 +43,9 @@ same-user processes.
 
 ## Command observation
 
-The prompt heuristic can mistake an idle REPL or program prompt for a shell.
+Common REPL and shell continuation prompts (`>`, `>>>`, `dquote>`, `db=#`,
+`mysql>` and similar) are refused, but the prompt heuristic can still mistake
+another program's prompt for a shell.
 `prompt-observed` does not establish an exit code. Terminal text is rendered,
 filtered and capped, rather than a complete byte-exact execution log. Buffer
 loss and observation failure are reported explicitly. A timeout or lost

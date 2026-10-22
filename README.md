@@ -17,8 +17,8 @@ This community adaptation of
 
 The adapter uses Termius's existing sessions and native transfer queue through
 its local debugging interface. It does not create a separate SSH/SFTP client.
-Other Termius versions are rejected before CDP access; Windows and Linux desktop
-support have not been implemented.
+A running Termius that reports another version is rejected before anything is
+injected; Windows and Linux desktop support have not been implemented.
 
 ## Why pair it with Computer Use?
 
@@ -64,10 +64,9 @@ client. It does not need you to copy terminal output back into the chat.
 | Select or close a terminal | `switch_terminal`, `close_terminal` |
 | Upload one regular file and inspect its native transfer | `list_sftp_sessions`, `sftp_upload`, `sftp_transfer_status` |
 
-The server also advertises `list_keychain`, which returns selected identity
-metadata. The supplied Codex configuration intentionally excludes it and enables
-the 14 tools above. Metadata filtering does not redact secrets printed by a
-remote command in the terminal.
+These 14 tools are the default set. `list_keychain`, which returns selected identity
+metadata, is registered only when `TERMIUS_ENABLE_KEYCHAIN=1` is set. Metadata
+filtering does not redact secrets printed by a remote command in the terminal.
 
 ## Requirements
 
@@ -91,8 +90,21 @@ python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements.lock
 ```
 
-The lock file pins the runtime and offline Python test dependencies. It does not
-contain credentials or machine-specific package paths.
+`requirements.lock` pins the runtime dependencies; `requirements-dev.lock` adds the
+offline test tools. Neither contains credentials or machine-specific package paths.
+
+The checkout can also be installed as a package with a `termius-mcp` command, for
+example run straight from it with [uv](https://docs.astral.sh/uv/):
+
+```sh
+uvx --from /absolute/path/to/termius-mcp --constraints /absolute/path/to/termius-mcp/requirements.lock termius-mcp
+```
+
+This command passes `requirements.lock` as constraints for the runtime dependencies.
+Use it in place of the `.venv/bin/python …/server.py` pair in the client
+configurations below. If you use a `git+https://` source pinned to a reviewed
+commit, point `--constraints` to the lock file from that same checkout; `uvx` does
+not discover `requirements.lock` automatically.
 
 ### Enable Termius access when needed
 
@@ -125,13 +137,49 @@ before enabling access.
 Merge [codex-mcp.toml.example](codex-mcp.toml.example) into `~/.codex/config.toml`.
 Replace both `/absolute/path/to/termius-mcp` placeholders with the absolute path
 to your checkout. Preserve unrelated configuration and do not enable this adapter
-and the upstream server together; they share a renderer bridge and lock directory.
+and the upstream server together; they share a lock directory and the same Termius window.
 
 Restart or reload your client if it has not loaded the new server. In Codex,
 `/mcp` displays connected servers. An MCP configuration does not create a
 same-named `@` app mention or slash-command skill. You can ask:
 
 > Use the termius MCP to list saved hosts and open terminal sessions.
+
+### Configure Claude Code
+
+**As a plugin** (needs [uv](https://docs.astral.sh/uv/) on `PATH`). This repository is
+also a plugin marketplace:
+
+```sh
+claude plugin marketplace add dk23lhl/termius-mcp
+claude plugin install termius-mcp@termius-mcp
+```
+
+Claude Code asks for the plugin's options (debug port, host-key mode, allowed hosts,
+upload directories, claim label); `/config` changes them later. The server runs as
+`uvx --from <plugin directory> termius-mcp`, pinned by `requirements.lock`, and its
+tools appear as `mcp__plugin_termius-mcp_termius__<tool>`. To try a checkout for one
+session without installing anything, run
+`claude --plugin-dir /absolute/path/to/termius-mcp`. Use either the plugin or the
+manual registration below, not both.
+
+**Manually**, register the server once for your user, with the same absolute paths:
+
+```sh
+claude mcp add termius -s user -e TERMIUS_CDP_PORT=9222 -e TERMIUS_HOSTKEY=ask -- /absolute/path/to/termius-mcp/.venv/bin/python /absolute/path/to/termius-mcp/server.py
+claude mcp list
+```
+
+The tools then appear as `mcp__termius__<tool>`. Add `-e TERMIUS_UPLOAD_ROOTS=...`
+or `-e TERMIUS_CONNECT_ALLOW=...` in the same command to set those limits.
+
+Either way, Claude Code asks before each MCP tool call unless a permission rule allows
+it; if you add rules, allow only read tools such as `read_terminal` and keep input,
+connect, close and upload tools on ask. The server also sends its usage rules (claim
+before typing, no blind retries, terminal text is data) as MCP server instructions,
+which Claude Code gives to the model.
+
+### Before connecting or typing
 
 Connecting or typing into a host should follow an explicit user request. Start
 with `connect_host` in dry-run mode, select the returned session ID, and claim the
@@ -144,7 +192,11 @@ changed-key dialogs are never accepted automatically.
    desired remote host, then navigate the remote pane to the destination directory.
 2. Call `list_sftp_sessions` and select the exact remote session ID.
 3. Call `sftp_upload` with the absolute local file path, that session ID, and the
-   exact remote directory. Directories and symbolic links are refused.
+   exact remote directory. Directories and symbolic links are refused, and so are
+   credential stores such as `~/.ssh`, `~/.aws`, `~/.netrc` and macOS keychains,
+   checked on the resolved path. Set `TERMIUS_UPLOAD_ROOTS` to `:`-separated
+   absolute directories to allow uploads only from there; a value that names no
+   directory (such as `:`) is a configuration error, not "no limit".
 4. If waiting times out, query the returned `transfer_id` with
    `sftp_transfer_status`. **Do not upload the file again just because waiting
    timed out.**
@@ -159,8 +211,14 @@ Automatic host connection currently applies to terminal sessions, not SFTP panes
 - `prompt-observed` is a prompt heuristic, not proof of a zero remote exit code.
   Commands run as supplied, without an added shell wrapper.
 - Terminal output is rendered buffer text, not a byte-exact process log. Long
-  output is capped at 200 lines; buffer trimming or resizing is reported as
-  `history-lost`. `run_command` preserves interior blank lines.
+  output is capped at 200 lines and about 24,000 characters, with lines over 1,000
+  characters clipped and marked (`TERMIUS_MAX_OUTPUT_CHARS` and
+  `TERMIUS_MAX_LINE_CHARS` raise these); buffer trimming is reported as `history-lost`,
+  and a resize during the command is reported separately because line breaks may
+  differ. If after a resize the command line cannot be located, or appears more
+  than once, only the current screen is returned, flagged
+  `output-boundary-unknown`; inspect it with `read_terminal`. `run_command`
+  preserves interior blank lines.
 - A timeout does not cancel a command or upload. Lost acknowledgements may mean
   input was delivered; inspect the existing session or transfer before retrying.
 - Claims coordinate cooperating MCP processes. They do not block human typing or
@@ -173,10 +231,14 @@ Automatic host connection currently applies to terminal sessions, not SFTP panes
 Offline tests do not require Termius, a debug port, credentials, or a remote host:
 
 ```sh
+.venv/bin/python -m pip install -r requirements-dev.lock
 .venv/bin/python -m pytest tests -q
 npm ci --ignore-scripts
 npm test
 ```
+
+The [CI workflow](.github/workflows/tests.yml) runs both suites on macOS, then builds
+the wheel, installs it outside the checkout and checks the advertised tools.
 
 JavaScript tests use the real `@xterm/headless@5.5.0` buffer/parser; Termius
 React/Redux objects and transfer streams are test doubles. See
