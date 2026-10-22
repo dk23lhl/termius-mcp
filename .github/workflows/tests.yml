@@ -1,0 +1,48 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    # The adapter targets macOS Termius. These suites need no Termius, debug port,
+    # credentials or remote host.
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Python suite
+        run: |
+          python -m pip install -r requirements-dev.lock
+          python -m pytest tests -q
+
+      - name: JavaScript suite
+        run: |
+          npm ci --ignore-scripts
+          npm test
+
+      - name: Build, install outside the checkout, discover tools
+        run: |
+          python -m pip wheel . --no-deps -w "$RUNNER_TEMP/dist"
+          wheel=$(ls "$RUNNER_TEMP"/dist/termius_mcp-*.whl)
+          python - "$wheel" <<'EOF'
+          import sys, zipfile
+          names = set(zipfile.ZipFile(sys.argv[1]).namelist())
+          need = {f"termius_mcp/{f}" for f in ("server.py", "bridge.js", "native.js")}
+          sys.exit(f"wheel lacks {sorted(need - names)}" if need - names else 0)
+          EOF
+          python -m venv "$RUNNER_TEMP/pkg"
+          "$RUNNER_TEMP/pkg/bin/python" -m pip install -r requirements.lock "$wheel"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/pkg/bin/python" "$GITHUB_WORKSPACE/tests/smoke_mcp_stdio.py" "$RUNNER_TEMP/pkg/bin/termius-mcp"
