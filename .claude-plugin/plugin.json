@@ -1,0 +1,64 @@
+{
+  "name": "termius-mcp",
+  "displayName": "Termius MCP",
+  "version": "0.5.0.dev0",
+  "description": "Read terminals, run commands and follow SFTP uploads in an already-open macOS Termius 9.38.1, through its local debugging port",
+  "author": {
+    "name": "dk23lhl",
+    "url": "https://github.com/dk23lhl"
+  },
+  "homepage": "https://github.com/dk23lhl/termius-mcp",
+  "repository": "https://github.com/dk23lhl/termius-mcp",
+  "license": "MIT",
+  "keywords": ["termius", "ssh", "sftp", "terminal", "mcp"],
+  "mcpServers": {
+    "termius": {
+      "command": "uvx",
+      "args": [
+        "--from", "${CLAUDE_PLUGIN_ROOT}",
+        "--constraints", "${CLAUDE_PLUGIN_ROOT}/requirements.lock",
+        "termius-mcp"
+      ],
+      "env": {
+        "TERMIUS_CDP_PORT": "${user_config.cdp_port}",
+        "TERMIUS_HOSTKEY": "${user_config.hostkey}",
+        "TERMIUS_CONNECT_ALLOW": "${user_config.connect_allow}",
+        "TERMIUS_UPLOAD_ROOTS": "${user_config.upload_roots}",
+        "TERMIUS_MCP_SESSION_LABEL": "${user_config.session_label}"
+      }
+    }
+  },
+  "userConfig": {
+    "cdp_port": {
+      "type": "string",
+      "title": "Termius debug port",
+      "description": "Loopback port Termius was started with (--remote-debugging-port). The plugin never opens it.",
+      "default": "9222"
+    },
+    "hostkey": {
+      "type": "string",
+      "title": "First-time host keys",
+      "description": "What connect_host does with a first-time host-key prompt: ask leaves it to you; add or once accept it. A changed key is never accepted.",
+      "options": ["ask", "add", "once"],
+      "default": "ask"
+    },
+    "connect_allow": {
+      "type": "string",
+      "title": "Hosts connect_host may open",
+      "description": "Comma-separated saved host labels. Empty allows any saved host; existing terminals are not restricted.",
+      "default": ""
+    },
+    "upload_roots": {
+      "type": "string",
+      "title": "Upload directories",
+      "description": "Colon-separated absolute directories sftp_upload may read from. Empty allows any path outside credential stores such as ~/.ssh, which are always refused.",
+      "default": ""
+    },
+    "session_label": {
+      "type": "string",
+      "title": "Label in claim listings",
+      "description": "How this client appears when it holds a terminal claim.",
+      "default": "claude-code"
+    }
+  }
+}
