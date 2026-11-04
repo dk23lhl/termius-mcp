@@ -1,5 +1,29 @@
 # Validation scope
 
+## Follow-up, 2026-11-04 (offline only)
+
+Python suite 276 passed on both Python 3.11 and 3.12, each in a fresh environment from
+`requirements-dev.lock` (the same one dependency warning); Node.js suite 63 passed. The
+CI workflow's build step, run locally, again installed the wheel outside the checkout
+and advertised the 14 default tools; `claude plugin validate --strict` passed; `npm ci`
+accepted the new JavaScript manifest version in a scratch copy. The workflow's matrix and
+pinned actions have not run on GitHub.
+
+- Proxies: a test with a real local fake proxy and a fake debug port (HTTP and websocket
+  on one port), with `HTTP_PROXY` set and `NO_PROXY` not covering loopback. Before the
+  fix the proxy received the discovery request; with only the HTTP path fixed it
+  received the websocket `CONNECT`. Now it receives nothing and the call completes.
+- Interrupting: with `run_command` still waiting, `send_key("ctrl-c")` reaches the
+  fake terminal and the command returns. Other keys and text are still refused as busy,
+  and Ctrl-C still needs this session's claim. A real shell was not involved.
+- `read_terminal(scrollback=true)`: real xterm tests for the renderer's cleaning and
+  head/tail selection, and Python tests that the returned text matches the full-history
+  result across 0 to 5,000 lines, with at most 200 lines transferred. The transfer size
+  on a live tab was not measured.
+
+None of this contacted Termius or a remote host. Live latency, memory use, and Ctrl-C
+against a real running command remain unchecked.
+
 ## Review follow-up, 2026-10-22 (offline only)
 
 The full suites passed in the existing local test environment: Python 3.12,
