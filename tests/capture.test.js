@@ -313,3 +313,32 @@ test('a stale wrapped row just past the buffer end is not read', () => {
   assert.deepEqual(Array.from(bridge.read('a', 2).lines), []);
   assert.deepEqual(Array.from(bridge.read('a', 1).lines), ['$ sleep 2']);
 });
+
+test('scrollback transfers only the cleaned head and tail it will show', async t => {
+  const terminal = new Terminal({cols: 40, rows: 6, scrollback: 1000, allowProposedApi: true});
+  t.after(() => terminal.dispose());
+  const bridge = load(terminal);
+  const rows = [];
+  for (let i = 0; i < 300; i++) rows.push(`L${i}   `, ...(i % 10 ? [] : ['', '', '']));
+  await write(terminal, '\r\n\r\n' + rows.join('\r\n') + '\r\n\r\n$ ');
+  const lines = r => Array.from(r.lines);
+  const full = lines(bridge.scrollback('a'));
+  // Cleaned like the server's _clean: no leading blank, runs of one, no trailing spaces.
+  assert.equal(full[0], 'L0');
+  assert.ok(full.every((x, i) => x === x.trimEnd() && (x || full[i - 1])));
+  const r = bridge.scrollback('a', 50, 150);
+  assert.equal(r.head, 50);
+  assert.equal(r.omitted, full.length - 200);
+  assert.deepEqual(lines(r), [...full.slice(0, 50), ...full.slice(-150)]);
+  assert.equal(full[full.length - 1], '$');
+});
+
+test('short history comes back whole from scrollback', async t => {
+  const terminal = new Terminal({cols: 40, rows: 6, allowProposedApi: true});
+  t.after(() => terminal.dispose());
+  const bridge = load(terminal);
+  await write(terminal, 'one\r\n\r\n\r\ntwo\r\n');
+  const r = bridge.scrollback('a', 50, 150);
+  assert.deepEqual(Array.from(r.lines), ['one', '', 'two']);
+  assert.equal(r.omitted, 0);
+});

@@ -1,4 +1,6 @@
 """The tools end to end against a fake Termius: what gets typed, and what is refused."""
+import asyncio
+
 import pytest
 
 import server
@@ -293,3 +295,71 @@ def test_run_command_with_very_long_lines_stays_within_the_budget(bridge, term):
     assert len(body) <= server.MAX_OUTPUT_CHARS
     assert "more characters in this line" in body and "lines omitted" in body
     assert body.splitlines()[-1].startswith("299")
+
+
+# ---- interrupting a command that is still running ---------------------------------
+
+def _running(term):
+    """Enter starts a command that keeps running until Ctrl-C, like a real shell."""
+    original = term.input
+
+    def shell(data):
+        if data == "\r":
+            term.sent.append(data)
+            term.busy = True
+        elif data == "\x03":
+            term.sent.append(data)
+            term.busy = False
+            term.lines += ["^C", term.prompt + " "]
+        else:
+            original(data)
+    term.input = shell
+
+
+def test_ctrl_c_reaches_a_command_run_command_is_still_waiting_on(bridge, term):
+    """Regression: run_command holds the tab lock for its whole duration, so the key that
+    stops the command was refused as "busy" until the command ended on its own."""
+    _running(term)
+    claim()
+
+    async def go():
+        running = asyncio.create_task(server.run_command("sleep 100", LOCAL, timeout=30))
+        await asyncio.sleep(1.0)
+        assert term.busy
+        await server.send_key("ctrl-c", LOCAL)
+        return await asyncio.wait_for(running, 10)
+
+    out = run(go())
+    assert "status: prompt-observed" in out and "^C" in out
+    assert term.sent == ["sleep 100", "\r", "\x03"]
+
+
+@pytest.mark.parametrize("call", [lambda: server.send_key("enter", LOCAL),
+                                  lambda: server.send_key("ctrl-d", LOCAL),
+                                  lambda: server.send_text("x", LOCAL)])
+def test_other_input_stays_refused_while_run_command_is_waiting(bridge, term, call):
+    _running(term)
+    claim()
+
+    async def go():
+        running = asyncio.create_task(server.run_command("sleep 100", LOCAL, timeout=30))
+        await asyncio.sleep(0.8)
+        with pytest.raises(RuntimeError, match="busy"):
+            await call()
+        await server.send_key("ctrl-c", LOCAL)
+        await asyncio.wait_for(running, 10)
+
+    run(go())
+    assert term.sent == ["sleep 100", "\r", "\x03"]
+
+
+def test_ctrl_c_past_the_lock_still_needs_this_sessions_claim(bridge, term):
+    async def go():
+        async with server._tab_lock({"id": term.id, "name": LOCAL}):      # someone is running
+            with pytest.raises(RuntimeError, match="not claimed"):
+                await server.send_key("ctrl-c", LOCAL)
+            foreign_claim(term.id)
+            with pytest.raises(RuntimeError, match="claimed by session runtime-other"):
+                await server.send_key("CTRL-C", LOCAL)
+    run(go())
+    assert term.sent == []

@@ -4,7 +4,7 @@ import time
 import pytest
 
 import server
-from conftest import run
+from conftest import cap_like_renderer, clean_like_renderer, run
 from test_multi_window import serve, target
 
 
@@ -284,21 +284,11 @@ def test_ambiguous_anchor_after_resize_is_reported(bridge, term, monkeypatch):
 
 # ---- capture transfer and quiet windows ------------------------------------------
 
-def _cap_like_renderer(lines, head, tail):
-    """Python mirror of bridge.js capLines."""
-    n = len(lines)
-    while n and not lines[n - 1].rstrip():
-        n -= 1
-    if n <= head + tail:
-        return {"lines": lines[:n], "head": n, "omitted": 0}
-    return {"lines": lines[:head] + lines[n - tail:n], "head": head, "omitted": n - head - tail}
-
-
 @pytest.mark.parametrize("n", [0, 1, 150, 199, 200, 201, 202, 203, 250, 351, 1000])
 @pytest.mark.parametrize("prompt_dropped", [True, False])
 def test_split_cap_gives_the_same_text_as_the_full_list(n, prompt_dropped):
     full = [f"L{i}" for i in range(n)] + ["me@box % "]
-    got = _cap_like_renderer(full, server.CAPTURE_HEAD, server.CAPTURE_TAIL)
+    got = cap_like_renderer(full, server.CAPTURE_HEAD, server.CAPTURE_TAIL)
     lines, head = got["lines"], got["head"]
     if prompt_dropped:
         full, lines, head = full[:-1], lines[:-1], min(head, len(lines) - 1)
@@ -315,7 +305,7 @@ def test_capped_transfer_returns_the_same_output_as_a_full_one(bridge, term, mon
         data = await original(fn, *args)
         if fn == "readCapture":
             _, _, _, head, tail = args
-            return {**data, **_cap_like_renderer(data["lines"], head, tail)}
+            return {**data, **cap_like_renderer(data["lines"], head, tail)}
         return data
 
     monkeypatch.setattr(bridge, "call", capped)
@@ -413,3 +403,31 @@ def test_writes_without_rendered_changes_do_not_reset_quiet_time(bridge, term, m
     out = run(server.run_command("echo hi", term.id, timeout=2))
     assert "status: prompt-observed" in out
     assert out.splitlines()[-1] == "hi"
+
+
+@pytest.mark.parametrize("n", [0, 1, 199, 200, 201, 202, 203, 1000, 5000])
+def test_scrollback_transfer_gives_the_same_text_as_the_full_history(bridge, term, monkeypatch, n):
+    """Regression: read_terminal(scrollback=true) sent every row of the history through
+    CDP. Only what is shown travels now; the text is what the full list gave."""
+    # Runs of blanks, as _clean collapses them, so cleaning order would change the counts.
+    term.lines = ["", ""] + [x for i in range(n) for x in ([f"L{i}"] if i % 7 else [f"L{i}", "", ""])] + ["", ""]
+    expected = server._render(server._clean(term.lines))
+    sent = []
+    original = bridge.call
+
+    async def call(fn, *args):
+        data = await original(fn, *args)
+        if fn == "scrollback":
+            sent.append(len(data["lines"]))
+        return data
+
+    monkeypatch.setattr(bridge, "call", call)
+    out = run(server.read_terminal(term.id, scrollback=True))
+    assert out.split("\n", 1)[1] == expected
+    assert sent[0] <= server.MAX_LINES
+
+
+def test_mirrors_clean_the_way_the_server_does():
+    raw = ["", "a  ", "", "", "b", "", ""]
+    assert clean_like_renderer(raw)[:-1] == server._clean(raw)
+    assert cap_like_renderer(clean_like_renderer(raw))["lines"] == server._clean(raw)

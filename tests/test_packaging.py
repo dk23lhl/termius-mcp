@@ -121,3 +121,30 @@ def test_claude_plugin_validate_strict_passes(target):
     res = subprocess.run(["claude", "plugin", "validate", "--strict", target], cwd=ROOT,
                          capture_output=True, text=True, timeout=120)
     assert res.returncode == 0, res.stdout + res.stderr
+
+
+# ---- versions and CI ----------------------------------------------------------
+
+WORKFLOW = (ROOT / ".github" / "workflows" / "tests.yml").read_text()
+
+
+def test_javascript_manifests_carry_the_package_version():
+    """npm needs semver, so 0.5.0.dev0 is written 0.5.0-dev.0 there."""
+    expected = re.sub(r"\.dev(\d+)$", r"-dev.\1", PYPROJECT["project"]["version"])
+    package = json.loads((ROOT / "package.json").read_text())
+    lock = json.loads((ROOT / "package-lock.json").read_text())
+    assert package["version"] == lock["version"] == lock["packages"][""]["version"] == expected
+
+
+def test_ci_covers_the_oldest_supported_python():
+    oldest = re.fullmatch(r">=(\d+\.\d+)", PYPROJECT["project"]["requires-python"]).group(1)
+    versions = re.search(r"python-version: \[(.*)\]", WORKFLOW).group(1)
+    assert f'"{oldest}"' in versions
+    assert "python-version: ${{ matrix.python-version }}" in WORKFLOW
+
+
+def test_ci_actions_are_pinned_to_commits():
+    uses = re.findall(r"uses: (\S+)", WORKFLOW)
+    assert uses, "the workflow names its actions"
+    for action in uses:
+        assert re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", action), action

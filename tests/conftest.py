@@ -16,6 +16,26 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def clean_like_renderer(lines):
+    """Python mirror of the cleaning in bridge.js scrollback()."""
+    out = []
+    for line in lines:
+        text = line.rstrip()
+        if text or (out and out[-1]):
+            out.append(text)
+    return out
+
+
+def cap_like_renderer(lines, head=None, tail=None):
+    """Python mirror of bridge.js capLines."""
+    n = len(lines)
+    while n and not lines[n - 1].rstrip():
+        n -= 1
+    if head is None or tail is None or n <= head + tail:
+        return {"lines": lines[:n], "head": n, "omitted": 0}
+    return {"lines": lines[:head] + lines[n - tail:n], "head": head, "omitted": n - head - tail}
+
+
 class FakeTerm:
     """One terminal tab. `input()` mimics a shell: typed text lands on the prompt
     line, "\\r" runs it. `busy=True` models a foreground command that has not
@@ -82,8 +102,8 @@ class FakeBridge:
                 "cursor_x": 0 if t.busy else len(last),
                 "cursor_row": t.cursor_row + (1 if t.busy else 0), "cols": 120}
 
-    def _scrollback(self, tid):
-        return {"lines": list(self.terms[tid].lines)}
+    def _scrollback(self, tid, head=None, tail=None):
+        return cap_like_renderer(clean_like_renderer(self.terms[tid].lines), head, tail)
 
     def _input(self, tid, data):
         self.terms[tid].input(data)
