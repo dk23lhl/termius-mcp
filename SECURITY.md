@@ -11,8 +11,9 @@ or forward the port to other hosts or make debugging a default login service.
 
 The MCP server uses stdio and opens no inbound network listener of its own. Its
 CDP client accepts only the configured `ws://127.0.0.1:<port>` endpoint and a
-Termius primary renderer URL. It rejects a running Termius whose CDP User-Agent
-reports a version other than 9.38.1, before injecting anything.
+Termius primary renderer URL, and it never uses a configured proxy for that traffic.
+It rejects a running Termius whose CDP User-Agent reports a version other than 9.38.1,
+before injecting anything.
 These checks are compatibility and targeting checks, not authentication of other
 same-user processes.
 

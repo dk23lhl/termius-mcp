@@ -1,6 +1,6 @@
 {
   "name": "termius-mcp",
-  "version": "0.4.0",
+  "version": "0.5.0-dev.0",
   "private": true,
   "description": "Offline JavaScript tests for the Termius MCP adapter",
   "license": "MIT",

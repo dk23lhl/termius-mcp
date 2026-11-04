@@ -59,6 +59,15 @@
   rebuild when `server.py` or the renderer scripts change.
 - Pass `requirements.lock` explicitly with `--constraints` in the English and Chinese
   README `uvx` commands; it is not discovered automatically.
+- Never send the debug-port traffic through a proxy. With `HTTP_PROXY` set and `NO_PROXY` not
+  covering loopback, discovery requests reached the proxy and failed as "port is not open",
+  and the CDP websocket, which carries terminal text, was tunnelled through it.
+- `send_key("ctrl-c")` reaches a command `run_command` is still waiting on. It used to be
+  refused as busy until the command ended; other input still is. The claim is still required.
+- `read_terminal(scrollback=true)` transfers only the lines it shows, with a count of the rest,
+  instead of the whole history. Returned text is unchanged.
+- CI also runs Python 3.11, the oldest supported version, and pins its actions to commits. The
+  JavaScript manifests carry the package version (`0.5.0-dev.0`).
 - Do not walk back from a row past the end of the buffer: Termius' circular buffer can hold
   a stale wrapped row there, which put the command line into a capture read before any
   output arrived.

@@ -413,11 +413,19 @@
       };
     },
 
-    scrollback(id) {
+    // Whole history, cleaned like the server's _clean (trailing spaces dropped, blank runs
+    // collapsed, no leading blank line), then only the lines it will show: cleaning must
+    // come first, or the line counts would change after the middle was left out.
+    scrollback(id, head, tail) {
       const a = api(id);
       if (!a) throw new Error('terminal not found in Termius (neither mediator pool nor DOM) — switch to its tab once');
       const b = a.terminal.buffer.active;
-      return { lines: logical(b, 0, b.length) };
+      const cleaned = [];
+      for (const line of logical(b, 0, b.length)) {
+        const text = line.trimEnd();
+        if (text || cleaned[cleaned.length - 1]) cleaned.push(text);
+      }
+      return capLines(cleaned, head, tail);
     },
 
     // Open a SAVED host (exact label, case-insensitive, must be unique) in a new tab of

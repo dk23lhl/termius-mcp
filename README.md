@@ -219,6 +219,8 @@ Automatic host connection currently applies to terminal sessions, not SFTP panes
   than once, only the current screen is returned, flagged
   `output-boundary-unknown`; inspect it with `read_terminal`. `run_command`
   preserves interior blank lines.
+- `send_key('ctrl-c')` can interrupt a command that `run_command` is still waiting on;
+  other input is refused until that call returns.
 - A timeout does not cancel a command or upload. Lost acknowledgements may mean
   input was delivered; inspect the existing session or transfer before retrying.
 - Claims coordinate cooperating MCP processes. They do not block human typing or

@@ -116,7 +116,7 @@ claude mcp add termius -s user -e TERMIUS_CDP_PORT=9222 -e TERMIUS_HOSTKEY=ask -
 ## 结果边界与测试
 
 `prompt-observed` 只表示观察到疑似提示符，不代表远端命令退出码为零。输出来自终端缓冲区，
-最多返回 200 行、约 24,000 字符，超过 1,000 字符的单行会被截断并标注（可用 `TERMIUS_MAX_OUTPUT_CHARS`、`TERMIUS_MAX_LINE_CHARS` 调高）；滚动历史被裁剪会报告 `history-lost`，执行期间窗口尺寸改变会单独提示（换行位置可能不同）；尺寸改变后若找不到命令行或命令行出现多次，只返回当前屏幕并标记 `output-boundary-unknown`，可再用 `read_terminal` 查看。认领机制只协调 MCP 调用者，不阻止人手输入。
+最多返回 200 行、约 24,000 字符，超过 1,000 字符的单行会被截断并标注（可用 `TERMIUS_MAX_OUTPUT_CHARS`、`TERMIUS_MAX_LINE_CHARS` 调高）；滚动历史被裁剪会报告 `history-lost`，执行期间窗口尺寸改变会单独提示（换行位置可能不同）；尺寸改变后若找不到命令行或命令行出现多次，只返回当前屏幕并标记 `output-boundary-unknown`，可再用 `read_terminal` 查看。`run_command` 仍在等待时，可以用 `send_key('ctrl-c')` 中断命令，其他输入会被拒绝。认领机制只协调 MCP 调用者，不阻止人手输入。
 
 ```sh
 .venv/bin/python -m pip install -r requirements-dev.lock

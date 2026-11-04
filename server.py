@@ -179,11 +179,16 @@ mcp = FastMCP("termius", instructions=INSTRUCTIONS)
 
 TERMIUS_VERSION = "9.38.1"
 UA_VERSION = re.compile(r"\bTermius/(\S+)")
+# The debug port is loopback only and carries terminal text, so it never goes through a
+# proxy. Both urllib and websockets would otherwise honour HTTP_PROXY when NO_PROXY does
+# not cover 127.0.0.1; see also the proxy=None in Page.__aenter__.
+LOOPBACK = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def _cdp_json(path: str):
     try:
-        return json.load(urllib.request.urlopen(f"http://127.0.0.1:{PORT}{path}", timeout=3))
+        with LOOPBACK.open(f"http://127.0.0.1:{PORT}{path}", timeout=3) as response:
+            return json.load(response)
     except OSError:
         raise RuntimeError(
             f"Termius debug port {PORT} is not open. Enabling --remote-debugging-port "
@@ -236,7 +241,7 @@ class Page:
     async def __aenter__(self):
         _check_running_version()
         url, self.windows = _target_ws()
-        self.ws = await websockets.connect(url, max_size=64 * 1024 * 1024)
+        self.ws = await websockets.connect(url, max_size=64 * 1024 * 1024, proxy=None)
         try:
             # Cheap probe first; the full source is only sent when this version is missing.
             if not await self.eval(f"!!(window.__kcBridges && {KC})"):
@@ -457,7 +462,8 @@ async def _tab_lock(s: dict):
                 if loop.time() >= deadline:
                     raise RuntimeError(f"session {s['name']} is busy with another input call "
                                        "(run_command / send_key / send_text); nothing was sent. "
-                                       "Check with read_terminal and retry.") from None
+                                       "Check with read_terminal and retry; "
+                                       "send_key('ctrl-c') interrupts a running command.") from None
                 await asyncio.sleep(0.1)
         try:
             yield
@@ -844,13 +850,20 @@ async def read_terminal(session: str | None = None, lines: int = 40, scrollback:
     lines of the screen. `scrollback=true` reads the whole history (capped)."""
     async with Page() as p:
         s = await _resolve(p, session)
-        data = await p.call("scrollback" if scrollback else "read", s["id"])
+        if scrollback:
+            # A long-lived tab holds tens of thousands of rows: the renderer cleans them and
+            # sends only the lines _render will show, with a count of the rest.
+            data = await p.call("scrollback", s["id"], CAPTURE_HEAD, MAX_LINES - CAPTURE_HEAD)
+        else:
+            data = await p.call("read", s["id"])
         warn = _window_warning(p)
-    text = _clean(data["lines"])
-    limit = MAX_LINES if scrollback else max(1, min(lines, MAX_LINES))
-    if not scrollback:
-        text = text[-limit:]
-    return f"[{s['name']}]\n" + _render(text, limit=limit) + (f"\n{warn}" if warn else "")
+    if scrollback:
+        text = [ANSI.sub("", line).rstrip() for line in data["lines"]]
+        body = _render(text, data["head"], data["omitted"])
+    else:
+        limit = max(1, min(lines, MAX_LINES))
+        body = _render(_clean(data["lines"])[-limit:], limit=limit)
+    return f"[{s['name']}]\n" + body + (f"\n{warn}" if warn else "")
 
 
 @mcp.tool(annotations=TYPE)
@@ -873,13 +886,18 @@ async def send_text(text: str, session: str | None = None) -> str:
 @mcp.tool(annotations=TYPE)
 async def send_key(key: str, session: str | None = None) -> str:
     """Send one control key: enter, tab, esc, backspace, ctrl-c, ctrl-d, ctrl-u, ctrl-l,
-    ctrl-z, ctrl-r, up, down, left, right, q, y, n. Note 'enter' submits whatever is typed."""
+    ctrl-z, ctrl-r, up, down, left, right, q, y, n. Note 'enter' submits whatever is typed.
+    ctrl-c also reaches a command this session's run_command is still waiting on;
+    other input is refused until that call returns."""
     seq = KEYS.get(key.lower())
     if seq is None:
         raise ValueError(f"unknown key {key!r}; one of: {', '.join(KEYS)}")
     async with Page() as p:
         s = await _resolve(p, session, strict=True)
-        async with _tab_lock(s):
+        # run_command holds the tab lock until it returns, and a client may have moved that
+        # call to the background: Ctrl-C has to get past it, or the command cannot be
+        # stopped. The claim still decides who may send it, and only this key skips the lock.
+        async with (contextlib.nullcontext() if key.lower() == "ctrl-c" else _tab_lock(s)):
             _require_claim(s)
             await p.call("input", s["id"], seq)
             await asyncio.sleep(0.4)
