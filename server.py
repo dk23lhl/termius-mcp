@@ -6,7 +6,8 @@
 """Minimal MCP server that drives an already-open Termius session over CDP.
 
 Termius must run with its debug port open:
-    open -a /Applications/Termius.app --args --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
+    macOS:   open -a /Applications/Termius.app --args --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
+    Windows: "%LOCALAPPDATA%\\Programs\\Termius\\Termius.exe" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
 
 Terminal output is rendered buffer text: ANSI and trailing whitespace are
 removed and long output is capped. run_command preserves interior blank lines.
@@ -17,13 +18,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import fcntl
+import errno
 import hashlib
 import json
 import os
 import posixpath
 import re
 import stat
+import sys
 import time
 import urllib.request
 from urllib.parse import urlparse
@@ -34,10 +36,37 @@ import websockets
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
+WINDOWS = sys.platform == "win32"
+if WINDOWS:
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+else:
+    import fcntl
+
 PORT = int(os.environ.get("TERMIUS_CDP_PORT", "9222"))
-TERMIUS_ORIGIN = "file:///Applications/Termius.app/"
-BRIDGE = ((Path(__file__).parent / "bridge.js").read_text()
-          + ";\n" + (Path(__file__).parent / "native.js").read_text())
+
+
+def _termius_origin() -> str:
+    """URL prefix of Termius' own renderer pages. macOS: the fixed app bundle. Windows: the
+    per-user install (%LOCALAPPDATA%\\Programs\\Termius), or TERMIUS_APP_DIR for another
+    location."""
+    if not WINDOWS:
+        return "file:///Applications/Termius.app/"
+    app = os.environ.get("TERMIUS_APP_DIR", "").strip()
+    if not app:
+        local = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        app = str(Path(local) / "Programs" / "Termius")
+    path = Path(app)
+    if not path.is_absolute():
+        raise ValueError(f"TERMIUS_APP_DIR={app!r} must be an absolute path")
+    return path.as_uri().rstrip("/") + "/"
+
+
+TERMIUS_ORIGIN = _termius_origin()
+# Explicit UTF-8: the Windows default code page would misread the scripts' non-ASCII text.
+BRIDGE = ((Path(__file__).parent / "bridge.js").read_text(encoding="utf-8")
+          + ";\n" + (Path(__file__).parent / "native.js").read_text(encoding="utf-8"))
 BRIDGE_ID = hashlib.sha1(BRIDGE.encode()).hexdigest()[:12]
 
 
@@ -151,8 +180,8 @@ CLAIM = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHin
 # model's context. Only rules that hold across all tools; each tool's docstring has
 # the details.
 INSTRUCTIONS = """\
-These tools drive the user's open Termius app (macOS, version 9.38.1) through its local
-debugging port. Each input lands in a real shell on the user's machine or a remote host.
+These tools drive the user's open Termius app (macOS 9.38.1 or Windows 10.4.1) through its
+local debugging port. Each input lands in a real shell on the user's machine or a remote host.
 
 - Reading needs no claim: list_terminal_sessions, read_terminal, list_hosts,
   list_sftp_sessions. Pass the exact session id from the listing to every other tool.
@@ -177,7 +206,9 @@ mcp = FastMCP("termius", instructions=INSTRUCTIONS)
 
 # ---------- CDP plumbing ----------------------------------------------------
 
-TERMIUS_VERSION = "9.38.1"
+# The renderer interfaces differ between releases, so each platform pins the release the
+# bridge was validated against.
+TERMIUS_VERSION = "10.4.1" if WINDOWS else "9.38.1"
 UA_VERSION = re.compile(r"\bTermius/(\S+)")
 # The debug port is loopback only and carries terminal text, so it never goes through a
 # proxy. Both urllib and websockets would otherwise honour HTTP_PROXY when NO_PROXY does
@@ -217,10 +248,13 @@ def _target_ws() -> tuple[str, int]:
     tabs are invisible, so the caller must know there is more than one and refuse to
     type. The window is picked by sorted URL so repeated calls hit the same one."""
     targets = _cdp_json("/json/list")
-    # Refuse anything that is not Termius' own primary window.
+    # Refuse anything that is not Termius' own primary window. Windows paths are
+    # case-insensitive, and Chromium may report the drive letter in either case.
+    def own(url: str) -> bool:
+        return (url.casefold().startswith(TERMIUS_ORIGIN.casefold()) if WINDOWS
+                else url.startswith(TERMIUS_ORIGIN))
     primary = sorted((t for t in targets
-                      if t.get("url", "").startswith(TERMIUS_ORIGIN)
-                      and "type=primary" in t.get("url", "")),
+                      if own(t.get("url", "")) and "type=primary" in t.get("url", "")),
                      key=lambda t: t["url"])
     if not primary:
         raise RuntimeError(f"Port {PORT} is open but no Termius main window is on it.")
@@ -389,21 +423,61 @@ async def _resolve(page: Page, session: str | None, strict: bool = False) -> dic
                        + ", ".join(f"{s['name']} ({s['id'][:8]})" for s in sessions))
 
 
-# Fixed path, NOT tempfile.gettempdir(): a client may give each session its own
-# TMPDIR, so a TMPDIR-based lock dir would never be shared between sessions.
-LOCK_DIR = Path(os.environ.get("TERMIUS_LOCK_DIR", f"/tmp/termius-mcp-locks-{os.getuid()}"))
+def _default_lock_dir() -> str:
+    # Fixed path, NOT tempfile.gettempdir(): a client may give each session its own
+    # TMPDIR (TEMP on Windows), so a temp-based lock dir would never be shared between
+    # sessions. On Windows %LOCALAPPDATA% is per user and private to that user's profile.
+    if WINDOWS:
+        local = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return str(Path(local) / "termius-mcp" / "locks")
+    return f"/tmp/termius-mcp-locks-{os.getuid()}"
+
+
+LOCK_DIR = Path(os.environ.get("TERMIUS_LOCK_DIR") or _default_lock_dir())
 LOCK_WAIT = float(os.environ.get("TERMIUS_LOCK_WAIT", "5"))
 # run_command requires the screen to stay unchanged this long before it types.
 SETTLE = float(os.environ.get("TERMIUS_SETTLE", "0.3"))
+
+# Windows has no O_NOFOLLOW: _refuse_link() covers the lock files there. O_BINARY keeps
+# the C runtime from translating line endings under Python's own text layer.
+O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+O_BINARY = getattr(os, "O_BINARY", 0)
+
+
+def _is_link(st: os.stat_result) -> bool:
+    """A symlink, or on Windows any reparse point (symlink, junction, mount point)."""
+    return stat.S_ISLNK(st.st_mode) or bool(
+        getattr(st, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+
+
+def _refuse_link(path: Path) -> None:
+    """Where O_NOFOLLOW is missing (Windows), refuse an existing link before opening it,
+    with the same error O_NOFOLLOW gives. Planting one in the lock directory already needs
+    this user's rights there, and symlink creation on Windows needs extra privilege too."""
+    if O_NOFOLLOW:
+        return
+    with contextlib.suppress(FileNotFoundError):
+        if _is_link(os.lstat(path)):
+            raise OSError(errno.ELOOP, "refusing to follow a link", str(path))
 
 
 def _lock_dir() -> Path:
     """Create LOCK_DIR, or check the existing one: a real directory (not a symlink) owned
     by this user and closed to everyone else. A fixed path under /tmp can be created first
-    by another local user; claims written into it could then follow their symlinks."""
+    by another local user; claims written into it could then follow their symlinks.
+    Windows has no mode bits or uid: the default lives in this user's private profile,
+    and a link or junction is refused."""
+    if WINDOWS:
+        LOCK_DIR.parent.mkdir(parents=True, exist_ok=True)
     with contextlib.suppress(FileExistsError):
         LOCK_DIR.mkdir(mode=0o700)
     st = os.lstat(LOCK_DIR)
+    if WINDOWS:
+        if not stat.S_ISDIR(st.st_mode) or _is_link(st):
+            raise RuntimeError(f"lock directory {LOCK_DIR} must be a real directory (not a "
+                               "symlink or junction); nothing was done. Remove it or set "
+                               "TERMIUS_LOCK_DIR.")
+        return LOCK_DIR
     if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
         raise RuntimeError(f"lock directory {LOCK_DIR} must be a directory owned by this "
                            "user with mode 0700 (not a symlink); nothing was done. Remove "
@@ -412,16 +486,51 @@ def _lock_dir() -> Path:
 
 
 def _open_lock(name: str) -> int:
-    return os.open(_lock_dir() / name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    path = _lock_dir() / name
+    _refuse_link(path)
+    return os.open(path, os.O_RDWR | os.O_CREAT | O_NOFOLLOW | O_BINARY, 0o600)
+
+
+# Contention errors from msvcrt.locking: the byte is locked by another handle.
+_LOCKED = {errno.EACCES, getattr(errno, "EDEADLOCK", errno.EDEADLK)}
+
+
+def _flock(fd: int, blocking: bool) -> None:
+    """Exclusive lock on an open lock file, released by the OS if the process dies.
+    Non-blocking: BlockingIOError while another process holds it. flock on macOS/Linux;
+    on Windows a lock on the file's first byte (msvcrt.locking, a LockFile wrapper)."""
+    if not WINDOWS:
+        fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        return
+    while True:
+        os.lseek(fd, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return
+        except OSError as e:
+            if e.errno not in _LOCKED:
+                raise
+            if not blocking:
+                raise BlockingIOError(errno.EAGAIN, "lock held by another process") from None
+        time.sleep(0.01)
+
+
+def _funlock(fd: int) -> None:
+    if not WINDOWS:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return
+    os.lseek(fd, 0, os.SEEK_SET)
+    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
 
 
 def _read_json(path: Path) -> dict | None:
     """None if missing or corrupt. A symlink raises (O_NOFOLLOW) instead of being read."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        _refuse_link(path)
+        fd = os.open(path, os.O_RDONLY | O_NOFOLLOW | O_BINARY)
     except FileNotFoundError:
         return None
-    with os.fdopen(fd) as f:
+    with os.fdopen(fd, encoding="utf-8") as f:
         try:
             return json.loads(f.read())
         except ValueError:
@@ -432,9 +541,9 @@ def _write_json(path: Path, data: dict) -> None:
     """Atomic replace through a temp file only this call creates (O_EXCL, no symlink
     follow); os.replace swaps the directory entry and never writes through a link."""
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | O_NOFOLLOW | O_BINARY, 0o600)
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(json.dumps(data))
         os.replace(tmp, path)
     except BaseException:
@@ -445,8 +554,8 @@ def _write_json(path: Path, data: dict) -> None:
 @contextlib.asynccontextmanager
 async def _tab_lock(s: dict):
     """One input call per tab at a time. Every client session spawns its own MCP
-    process, so an asyncio.Lock would only cover one of them: use flock on a file per
-    tab id, which the kernel releases even if the process dies mid-call. Wait briefly
+    process, so an asyncio.Lock would only cover one of them: use a file lock per tab
+    id, which the OS releases even if the process dies mid-call. Wait briefly
     (a short send_key finishing), then refuse rather than queue behind a long command.
     Humans typing in Termius are not covered -- this only serialises MCP callers."""
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", s["id"])
@@ -456,7 +565,7 @@ async def _tab_lock(s: dict):
         deadline = loop.time() + LOCK_WAIT
         while True:
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _flock(fd, blocking=False)
                 break
             except BlockingIOError:
                 if loop.time() >= deadline:
@@ -468,7 +577,7 @@ async def _tab_lock(s: dict):
         try:
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            _funlock(fd)
     finally:
         os.close(fd)
 
@@ -495,10 +604,12 @@ OWNER = {"pid": os.getpid(), "token": uuid.uuid4().hex,
 def _claims_mutex():
     fd = _open_lock("claims.mutex")
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)      # held for a file read/write only
-        yield
+        _flock(fd, blocking=True)           # held for a file read/write only
+        try:
+            yield
+        finally:
+            _funlock(fd)
     finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
 
 
@@ -506,7 +617,35 @@ def _claim_path(tab_id: str) -> Path:
     return LOCK_DIR / (re.sub(r"[^A-Za-z0-9_-]", "_", tab_id) + ".claim")
 
 
+if WINDOWS:
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    _kernel32.OpenProcess.restype = wintypes.HANDLE
+    _kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    _kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    _kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    _kernel32.CloseHandle.restype = wintypes.BOOL
+
+
+def _alive_windows(pid: int) -> bool:
+    """Never os.kill here: on Windows os.kill(pid, 0) TERMINATES the process."""
+    if not 0 < pid <= 0xFFFFFFFF:
+        return False
+    handle = _kernel32.OpenProcess(0x1000, False, pid)    # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return ctypes.get_last_error() == 5               # ERROR_ACCESS_DENIED: it exists
+    try:
+        code = wintypes.DWORD()
+        if not _kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True
+        return code.value == 259                          # STILL_ACTIVE
+    finally:
+        _kernel32.CloseHandle(handle)
+
+
 def _alive(pid: int) -> bool:
+    if WINDOWS:
+        return _alive_windows(pid)
     try:
         os.kill(pid, 0)
         return True
@@ -626,7 +765,7 @@ async def _connect_lock():
         deadline = loop.time() + 30
         while True:
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _flock(fd, blocking=False)
                 break
             except BlockingIOError:
                 if loop.time() >= deadline:
@@ -636,7 +775,7 @@ async def _connect_lock():
         try:
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            _funlock(fd)
     finally:
         os.close(fd)
 
@@ -1142,13 +1281,21 @@ UPLOAD_DENY_HOME = (
     ".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".config/gcloud", ".config/gh",
     ".password-store", ".netrc", ".git-credentials", ".pgpass", ".npmrc", ".pypirc",
     ".codex", ".claude", "Library/Keychains", "Library/Application Support/Termius",
+    # Windows: Termius' own data, DPAPI master keys and Credential Manager stores, and
+    # tool configuration that lives under AppData instead of dot-directories.
+    "AppData/Roaming/Termius", "AppData/Local/Termius",
+    "AppData/Roaming/Microsoft/Credentials", "AppData/Local/Microsoft/Credentials",
+    "AppData/Roaming/Microsoft/Protect", "AppData/Roaming/Microsoft/Crypto",
+    "AppData/Local/Microsoft/Vault", "AppData/Roaming/gcloud", "AppData/Roaming/GitHub CLI",
+    "AppData/Roaming/npm/etc/npmrc", "AppData/Roaming/pip", "AppData/Roaming/Docker",
 )
 # Key directories wherever they appear (backups, other users' homes, mounted volumes).
 UPLOAD_DENY_NAMES = {".ssh", ".gnupg"}
 
 
 def _upload_roots() -> list[Path]:
-    """TERMIUS_UPLOAD_ROOTS: absolute directories separated by ':'. Unset or empty = any
+    """TERMIUS_UPLOAD_ROOTS: absolute directories separated by os.pathsep (':' on macOS,
+    ';' on Windows). Unset or empty = any
     path outside the protected locations. A relative entry, or a value that names no
     directory at all (":", "  "), is a configuration error: an intended limit must never
     silently become no limit."""
@@ -1167,8 +1314,8 @@ def _upload_roots() -> list[Path]:
 
 def _check_upload_source(path: Path) -> None:
     """`path` is already resolved, so symlinked parents cannot hide a protected file.
-    Protected locations compare case-insensitively (macOS volumes usually are: ~/.SSH is
-    ~/.ssh); the optional roots compare exactly, which can only refuse more."""
+    Protected locations compare case-insensitively (macOS and Windows volumes usually
+    are: ~/.SSH is ~/.ssh); the optional roots compare exactly, which can only refuse more."""
     parts = [p.casefold() for p in path.parts]
     home = Path.home()
     for rel in UPLOAD_DENY_HOME:

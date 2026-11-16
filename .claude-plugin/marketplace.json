@@ -4,7 +4,7 @@
     "name": "dk23lhl",
     "url": "https://github.com/dk23lhl"
   },
-  "description": "Community Termius MCP adapter for macOS Termius 9.38.1; not an official Termius integration",
+  "description": "Community Termius MCP adapter for macOS Termius 9.38.1 and Windows Termius 10.4.1; not an official Termius integration",
   "plugins": [
     {
       "name": "termius-mcp",

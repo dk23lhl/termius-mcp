@@ -3,6 +3,7 @@ reachable, so anything that types must fail closed and reads must say they are p
 import asyncio
 import http.server
 import json
+import sys
 import threading
 
 import pytest
@@ -61,6 +62,33 @@ def test_foreign_page_on_the_port_is_ignored(monkeypatch):
     serve(monkeypatch, [target(3, origin="file:///Applications/Other.app/")])
     with pytest.raises(RuntimeError, match="no Termius main window"):
         server._target_ws()
+
+
+WIN_ORIGIN = "file:///C:/Users/me/AppData/Local/Programs/Termius/"
+
+
+def test_windows_window_match_ignores_case_but_not_the_install_path(monkeypatch):
+    """Chromium may report the drive letter or path in another case on Windows; a page
+    from a sibling directory (same prefix without the slash) is still foreign."""
+    monkeypatch.setattr(server, "WINDOWS", True)
+    monkeypatch.setattr(server, "TERMIUS_ORIGIN", WIN_ORIGIN)
+    serve(monkeypatch, [target(3, origin=WIN_ORIGIN.lower())])
+    assert server._target_ws() == ("ws://127.0.0.1:9222/devtools/page/3", 1)
+    serve(monkeypatch, [target(3, origin="file:///C:/Users/me/AppData/Local/Programs/TermiusX/")])
+    with pytest.raises(RuntimeError, match="no Termius main window"):
+        server._target_ws()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows install location")
+def test_windows_origin_is_the_per_user_install_or_termius_app_dir(monkeypatch):
+    monkeypatch.delenv("TERMIUS_APP_DIR", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\me\AppData\Local")
+    assert server._termius_origin() == WIN_ORIGIN
+    monkeypatch.setenv("TERMIUS_APP_DIR", r"D:\Apps\Termius")
+    assert server._termius_origin() == "file:///D:/Apps/Termius/"
+    monkeypatch.setenv("TERMIUS_APP_DIR", r"Apps\Termius")
+    with pytest.raises(ValueError, match="absolute"):
+        server._termius_origin()
 
 
 def test_closed_port_gives_actionable_error(monkeypatch):
@@ -128,15 +156,25 @@ def cdp(monkeypatch, user_agent):
     monkeypatch.setattr(server.websockets, "connect", connect)
 
 
+def _bump_minor(version):
+    major, minor, *_ = version.split(".")
+    return f"{major}.{int(minor) + 1}.0"
+
+
 def test_supported_running_version_proceeds_to_connect(monkeypatch):
-    cdp(monkeypatch, UA.format("9.38.1"))
+    cdp(monkeypatch, UA.format(server.TERMIUS_VERSION))
     with pytest.raises(Connected):
         run(server.Page().__aenter__())
 
 
+# Relative to the platform's pinned release (9.38.1 on macOS, 10.4.1 on Windows).
+NEWER = _bump_minor(server.TERMIUS_VERSION)
+LONGER = server.TERMIUS_VERSION + "0"       # 9.38.10: a prefix match must not pass
+
+
 @pytest.mark.parametrize("ua, message", [
-    (UA.format("9.39.0"), "running Termius reports 9.39.0"),
-    (UA.format("9.38.10"), "running Termius reports 9.38.10"),
+    (UA.format(NEWER), f"running Termius reports {NEWER}"),
+    (UA.format(LONGER), f"running Termius reports {LONGER}"),
     ("Mozilla/5.0 HeadlessChrome/120.0.0.0 Safari/537.36", "does not report a Termius"),
 ])
 def test_other_running_versions_are_refused_before_any_connection(monkeypatch, ua, message):
@@ -175,7 +213,7 @@ def proxied_cdp(monkeypatch):
 
     def http_pages(connection, request):
         port = state["port"]
-        pages = {"/json/version": {"User-Agent": UA.format("9.38.1")},
+        pages = {"/json/version": {"User-Agent": UA.format(server.TERMIUS_VERSION)},
                  "/json/list": [{"url": f"{server.TERMIUS_ORIGIN}main.html?type=primary",
                                  "webSocketDebuggerUrl": f"ws://127.0.0.1:{port}/devtools/page/1"}]}
         if request.path in pages:
