@@ -153,6 +153,29 @@ def bridge(monkeypatch, lockdir, term):
     return b
 
 
+def link_dir(link, target):
+    """A directory link at `link`. Windows refuses symlinks without Developer Mode or
+    admin rights, so fall back to a junction there: any user can create one, which makes
+    it the link an attacker would actually plant."""
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        if sys.platform != "win32":
+            raise
+        import _winapi
+        _winapi.CreateJunction(str(target), str(link))
+
+
+def symlink_file_or_skip(link, target):
+    """File symlinks have no unprivileged Windows equivalent: skip where they are refused."""
+    try:
+        link.symlink_to(target)
+    except OSError as e:
+        if sys.platform == "win32" and getattr(e, "winerror", None) == 1314:
+            pytest.skip("creating symlinks needs Developer Mode or admin rights on Windows")
+        raise
+
+
 def foreign_claim(tab_id, pid=None, last=None, token="someone-else"):
     """Write a claim as if another session's MCP process held it."""
     server.LOCK_DIR.mkdir(mode=0o700, exist_ok=True)

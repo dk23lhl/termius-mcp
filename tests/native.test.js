@@ -100,6 +100,17 @@ test('upload validates target directory and refuses duplicate active jobs', asyn
   assert.equal(f.uploads(), 1);
 });
 
+test('Windows drive paths are accepted on the local side only', async () => {
+  const win = {...request, local_path: 'C:\\Users\\test\\a.txt', local_directory: 'C:\\Users\\test'};
+  const f = fixture();
+  await f.bridge.startUpload(win); await flush();
+  assert.equal(f.bridge.transferStatus('job-1').status, 'running');
+  for (const bad of [{local_path: 'Users\\test\\a.txt'}, {local_directory: 'test'},
+                     {local_path: 'C:a.txt'}, {remote_directory: 'C:\\upload'}, {filename: 'x\\a.txt'}]) {
+    await assert.rejects(() => fixture().bridge.startUpload({...win, ...bad}), /invalid upload paths/);
+  }
+});
+
 test('malformed native transfer queue is rejected before upload', async () => {
   const f = fixture();
   f.setTransferStreams([['malformed-entry']]);

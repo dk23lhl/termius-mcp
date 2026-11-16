@@ -2,7 +2,7 @@
   "name": "termius-mcp",
   "displayName": "Termius MCP",
   "version": "0.5.0.dev0",
-  "description": "Read terminals, run commands and follow SFTP uploads in an already-open macOS Termius 9.38.1, through its local debugging port",
+  "description": "Read terminals, run commands and follow SFTP uploads in an already-open Termius (macOS 9.38.1, Windows 10.4.1), through its local debugging port",
   "author": {
     "name": "dk23lhl",
     "url": "https://github.com/dk23lhl"
@@ -51,7 +51,7 @@
     "upload_roots": {
       "type": "string",
       "title": "Upload directories",
-      "description": "Colon-separated absolute directories sftp_upload may read from. Empty allows any path outside credential stores such as ~/.ssh, which are always refused.",
+      "description": "Absolute directories sftp_upload may read from, separated by : on macOS and ; on Windows. Empty allows any path outside credential stores such as ~/.ssh, which are always refused.",
       "default": ""
     },
     "session_label": {

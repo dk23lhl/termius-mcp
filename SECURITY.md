@@ -12,8 +12,8 @@ or forward the port to other hosts or make debugging a default login service.
 The MCP server uses stdio and opens no inbound network listener of its own. Its
 CDP client accepts only the configured `ws://127.0.0.1:<port>` endpoint and a
 Termius primary renderer URL, and it never uses a configured proxy for that traffic.
-It rejects a running Termius whose CDP User-Agent reports a version other than 9.38.1,
-before injecting anything.
+It rejects a running Termius whose CDP User-Agent reports a version other than the one
+pinned for its platform (9.38.1 on macOS, 10.4.1 on Windows), before injecting anything.
 These checks are compatibility and targeting checks, not authentication of other
 same-user processes.
 
@@ -25,7 +25,8 @@ same-user processes.
   files printed by the user or a command. Review it before sharing transcripts.
 - `sftp_upload` refuses credential stores on the resolved local path (`~/.ssh`,
   `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.netrc`, `~/.codex`, `~/.claude`, macOS
-  keychains and similar, plus any `.ssh`/`.gnupg` directory), even inside
+  keychains, Termius' data and Windows Credential Manager / DPAPI stores under
+  `AppData`, and similar, plus any `.ssh`/`.gnupg` directory), even inside
   `TERMIUS_UPLOAD_ROOTS`. That variable optionally limits uploads to listed
   directories; a value naming no directory is refused as a configuration error.
   Neither replaces the client's own approval of each upload.
@@ -74,7 +75,14 @@ destination before trying again.
 
 The published tests use simulated Termius objects; limited live checks cover one
 macOS Termius 9.38.1 installation. Live error/retry/cancel, overwrite and large-file
-coverage is not established. See [validation scope](docs/VALIDATION.md).
+coverage is not established.
+
+On Windows, claims and locks are kept in `%LOCALAPPDATA%\termius-mcp\locks`. Windows
+has no POSIX mode bits, so the server cannot check the directory's permissions as it
+does on macOS: it relies on the user profile's ACL and only refuses a symlink or
+junction in place of the directory or a lock file. If you set `TERMIUS_LOCK_DIR`,
+choose a directory only your account can write. Process liveness is checked with
+`OpenProcess`/`GetExitCodeProcess`, never `os.kill`, which terminates on Windows. See [validation scope](docs/VALIDATION.md).
 
 No Termius terms-of-service or proprietary-license compatibility review has been
 completed. This project distributes its own adapter and upstream MIT code, not

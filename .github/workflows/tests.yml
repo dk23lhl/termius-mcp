@@ -9,15 +9,19 @@ permissions:
 
 jobs:
   offline:
-    # The adapter targets macOS Termius. These suites need no Termius, debug port,
-    # credentials or remote host.
-    runs-on: macos-latest
+    # The adapter targets macOS and Windows Termius. These suites need no Termius,
+    # debug port, credentials or remote host.
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
+        os: [macos-latest, windows-latest]
         # The oldest Python that pyproject.toml allows, and the one used for validation.
         python-version: ["3.11", "3.12"]
+    defaults:
+      run:
+        shell: bash
     steps:
       # Pinned to commits: a tag can be moved after review.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -40,15 +44,18 @@ jobs:
 
       - name: Build, install outside the checkout, discover tools
         run: |
-          python -m pip wheel . --no-deps -w "$RUNNER_TEMP/dist"
-          wheel=$(ls "$RUNNER_TEMP"/dist/termius_mcp-*.whl)
+          tmp="$RUNNER_TEMP"
+          bin=bin
+          if [ "$RUNNER_OS" = Windows ]; then tmp=$(cygpath -u "$RUNNER_TEMP"); bin=Scripts; fi
+          python -m pip wheel . --no-deps -w "$tmp/dist"
+          wheel=$(ls "$tmp"/dist/termius_mcp-*.whl)
           python - "$wheel" <<'EOF'
           import sys, zipfile
           names = set(zipfile.ZipFile(sys.argv[1]).namelist())
           need = {f"termius_mcp/{f}" for f in ("server.py", "bridge.js", "native.js")}
           sys.exit(f"wheel lacks {sorted(need - names)}" if need - names else 0)
           EOF
-          python -m venv "$RUNNER_TEMP/pkg"
-          "$RUNNER_TEMP/pkg/bin/python" -m pip install -r requirements.lock "$wheel"
-          cd "$RUNNER_TEMP"
-          "$RUNNER_TEMP/pkg/bin/python" "$GITHUB_WORKSPACE/tests/smoke_mcp_stdio.py" "$RUNNER_TEMP/pkg/bin/termius-mcp"
+          python -m venv "$tmp/pkg"
+          "$tmp/pkg/$bin/python" -m pip install -r requirements.lock "$wheel"
+          cd "$tmp"
+          "$tmp/pkg/$bin/python" "$GITHUB_WORKSPACE/tests/smoke_mcp_stdio.py" "$tmp/pkg/$bin/termius-mcp"

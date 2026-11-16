@@ -91,8 +91,12 @@
   bridge.startUpload = async request => {
     const {token, session, local_path, local_directory, filename, remote_directory, size} = request;
     if (!token || jobs.has(token)) throw new Error('unique transfer token required');
-    if (!local_path?.startsWith('/') || !local_directory?.startsWith('/') || !remote_directory?.startsWith('/')
-        || !filename || filename.includes('/') || /[\x00-\x1f\x7f-\x9f]/.test(filename)
+    // Local paths are POSIX on macOS and drive paths (C:\...) on Windows; remote ones are POSIX.
+    const drive = p => /^[A-Za-z]:[\\/]/.test(p || '');
+    const localAbs = p => p?.startsWith('/') || drive(p);
+    if (!localAbs(local_path) || !localAbs(local_directory) || !remote_directory?.startsWith('/')
+        || !filename || filename.includes('/') || (drive(local_path) && filename.includes('\\'))
+        || /[\x00-\x1f\x7f-\x9f]/.test(filename)
         || !Number.isSafeInteger(size) || size < 0) throw new Error('invalid upload paths or file size');
     for (const j of jobs.values()) {
       if (!j.finalized && j.session === session && j.filename === filename

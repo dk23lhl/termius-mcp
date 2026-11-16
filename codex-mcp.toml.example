@@ -1,4 +1,5 @@
 # Replace BOTH /absolute/path/to/termius-mcp placeholders with your checkout path.
+# Windows: command = "C:/path/to/termius-mcp/.venv/Scripts/python.exe" (forward slashes).
 # Merge this table into ~/.codex/config.toml; preserve existing settings.
 [mcp_servers.termius]
 command = "/absolute/path/to/termius-mcp/.venv/bin/python"
@@ -12,7 +13,7 @@ TERMIUS_CDP_PORT = "9222"
 TERMIUS_HOSTKEY = "ask"
 # Optional: restrict connections to these saved host labels.
 # TERMIUS_CONNECT_ALLOW = "dev-box,staging-box"
-# Optional: allow uploads only from these absolute directories (':'-separated).
+# Optional: allow uploads only from these absolute directories (':'-separated; ';' on Windows).
 # Credential stores such as ~/.ssh are refused either way.
 # TERMIUS_UPLOAD_ROOTS = "/Users/me/uploads"
 # Optional: a readable name for this client in claim listings (default: client-pid-<pid>).

@@ -11,7 +11,7 @@ import server
 from smoke_mcp_stdio import DEFAULT_TOOLS
 
 ROOT = Path(server.__file__).resolve().parent
-PYPROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text())
+PYPROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
 
 def _pins(lines):
@@ -23,7 +23,8 @@ def test_wheel_maps_the_server_and_both_renderer_scripts_into_the_package():
     include = PYPROJECT["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
     assert include == {f: f"termius_mcp/{f}" for f in ("server.py", "bridge.js", "native.js")}
     # Exactly the scripts server.py reads next to itself.
-    assert server.BRIDGE == ((ROOT / "bridge.js").read_text() + ";\n" + (ROOT / "native.js").read_text())
+    assert server.BRIDGE == ((ROOT / "bridge.js").read_text(encoding="utf-8") + ";\n"
+                             + (ROOT / "native.js").read_text(encoding="utf-8"))
 
 
 def test_console_entry_point_targets_main():
@@ -33,9 +34,10 @@ def test_console_entry_point_targets_main():
 
 def test_runtime_pins_agree_across_pyproject_script_header_and_lock():
     declared = _pins(PYPROJECT["project"]["dependencies"])
-    header = re.search(r"# dependencies = \[(.*)\]", (ROOT / "server.py").read_text()).group(1)
+    header = re.search(r"# dependencies = \[(.*)\]",
+                       (ROOT / "server.py").read_text(encoding="utf-8")).group(1)
     assert _pins(x.strip(' "') for x in header.split(",")) == declared
-    lock = _pins((ROOT / "requirements.lock").read_text().splitlines())
+    lock = _pins((ROOT / "requirements.lock").read_text(encoding="utf-8").splitlines())
     assert all(lock.get(name) == version for name, version in declared.items())
     assert "pytest" not in lock
 

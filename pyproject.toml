@@ -5,17 +5,18 @@ build-backend = "hatchling.build"
 [project]
 name = "termius-mcp"
 version = "0.5.0.dev0"
-description = "MCP server for an already-open macOS Termius 9.38.1, over its local debugging port"
+description = "MCP server for an already-open Termius (macOS 9.38.1, Windows 10.4.1), over its local debugging port"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 # Same pins as the inline script header in server.py and requirements.lock.
 dependencies = ["mcp==1.27.0", "websockets==17.2"]
-classifiers = ["Operating System :: MacOS", "Programming Language :: Python :: 3"]
+classifiers = ["Operating System :: MacOS", "Operating System :: Microsoft :: Windows",
+               "Programming Language :: Python :: 3"]
 
 [project.urls]
-Repository = "https://github.com/dk23lhl/termius-mcp"
+Repository = "https://github.com/dev-huzaki/termius-mcp"
 
 [project.scripts]
 termius-mcp = "termius_mcp.server:main"

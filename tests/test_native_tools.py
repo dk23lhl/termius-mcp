@@ -1,6 +1,8 @@
+import os
+
 import pytest
 import server
-from conftest import run
+from conftest import link_dir, run
 
 
 def test_switch_verifies_active_session(bridge, term, monkeypatch):
@@ -76,6 +78,7 @@ def home(tmp_path, monkeypatch):
     h = tmp_path / "home"
     h.mkdir()
     monkeypatch.setenv("HOME", str(h))
+    monkeypatch.setenv("USERPROFILE", str(h))     # what Path.home() reads on Windows
     monkeypatch.delenv("TERMIUS_UPLOAD_ROOTS", raising=False)
     return h
 
@@ -102,7 +105,11 @@ def _file(path, text="secret"):
 
 @pytest.mark.parametrize("rel", [".ssh/id_ed25519", ".aws/credentials", ".netrc", ".codex/auth.json",
                                  "Library/Keychains/login.keychain-db", ".SSH/id_rsa",
-                                 "backup/.ssh/id_rsa", "old/.gnupg/secring.gpg"])
+                                 "backup/.ssh/id_rsa", "old/.gnupg/secring.gpg",
+                                 "AppData/Roaming/Termius/termius.db",
+                                 "AppData/Roaming/Microsoft/Credentials/ABCDEF",
+                                 "AppData/Roaming/Microsoft/Protect/S-1-5-21/key",
+                                 "appdata/roaming/gcloud/credentials.db"])
 def test_upload_refuses_credential_stores(home, uploads, rel):
     f = _file(home / rel)
     with pytest.raises(ValueError, match="upload refused"):
@@ -112,14 +119,14 @@ def test_upload_refuses_credential_stores(home, uploads, rel):
 
 def test_upload_refuses_a_key_reached_through_a_symlinked_directory(home, uploads):
     _file(home / ".ssh" / "id_ed25519")
-    (home / "innocent").symlink_to(home / ".ssh")
+    link_dir(home / "innocent", home / ".ssh")
     with pytest.raises(ValueError, match="protected ~/.ssh"):
         run(server.sftp_upload(str(home / "innocent" / "id_ed25519"), "remote", "/upload"))
     assert uploads == []
 
 
 def test_upload_roots_limit_sources(home, uploads, monkeypatch):
-    monkeypatch.setenv("TERMIUS_UPLOAD_ROOTS", f"{home / 'uploads'}:{home / 'more'}")
+    monkeypatch.setenv("TERMIUS_UPLOAD_ROOTS", f"{home / 'uploads'}{os.pathsep}{home / 'more'}")
     ok = _file(home / "uploads" / "report.txt")
     other = _file(home / "docs" / "notes.txt")
     with pytest.raises(ValueError, match="outside TERMIUS_UPLOAD_ROOTS"):
@@ -151,7 +158,7 @@ def test_ordinary_file_uploads_without_roots(home, uploads):
     assert len(uploads) == 1
 
 
-@pytest.mark.parametrize("value", [":", " : ", "::", "   "])
+@pytest.mark.parametrize("value", [os.pathsep, f" {os.pathsep} ", os.pathsep * 2, "   "])
 def test_upload_roots_naming_no_directory_is_a_configuration_error(home, uploads, monkeypatch, value):
     """Regression: these parsed to an empty list, which meant 'no limit configured'."""
     monkeypatch.setenv("TERMIUS_UPLOAD_ROOTS", value)

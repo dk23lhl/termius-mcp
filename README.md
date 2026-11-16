@@ -13,12 +13,15 @@ screenshots and clicks.
 
 This community adaptation of
 [deltaguita/termius-mcp](https://github.com/deltaguita/termius-mcp) targets
-**macOS Termius 9.38.1**. It is not an official Termius integration.
+**macOS Termius 9.38.1**, and this fork adds **Windows Termius 10.4.1**. It is not an
+official Termius integration.
 
 The adapter uses Termius's existing sessions and native transfer queue through
 its local debugging interface. It does not create a separate SSH/SFTP client.
-A running Termius that reports another version is rejected before anything is
-injected; Windows and Linux desktop support have not been implemented.
+A running Termius that reports another version than the one pinned for its platform
+is rejected before anything is injected; Linux desktop support has not been
+implemented. See [Windows](#windows) for what differs there and what has been
+validated.
 
 ## Why pair it with Computer Use?
 
@@ -70,7 +73,10 @@ filtering does not redact secrets printed by a remote command in the terminal.
 
 ## Requirements
 
-- macOS, with **Termius 9.38.1** installed at `/Applications/Termius.app`.
+- macOS, with **Termius 9.38.1** installed at `/Applications/Termius.app`; or
+  Windows 10/11, with **Termius 10.4.1** installed for the current user
+  (`%LOCALAPPDATA%\Programs\Termius`, the installer's default; set `TERMIUS_APP_DIR`
+  for another location).
 - Python 3.11 or newer; Python 3.12 was used for validation.
 - Saved Termius hosts and access already configured by you.
 - Node.js 20 or newer only for the JavaScript development tests; Node.js 24 was
@@ -151,7 +157,7 @@ same-named `@` app mention or slash-command skill. You can ask:
 also a plugin marketplace:
 
 ```sh
-claude plugin marketplace add dk23lhl/termius-mcp
+claude plugin marketplace add dev-huzaki/termius-mcp
 claude plugin install termius-mcp@termius-mcp
 ```
 
@@ -228,6 +234,59 @@ Automatic host connection currently applies to terminal sessions, not SFTP panes
 - `TERMIUS_CONNECT_ALLOW` restricts `connect_host` only, not access to existing
   sessions. It is not a complete host-access policy.
 
+## Windows
+
+The tools and the workflow are the same as on macOS. Commands below are for PowerShell.
+
+**Install** (or use the plugin / `uvx` command above, which work unchanged):
+
+```powershell
+git clone https://github.com/dev-huzaki/termius-mcp.git
+cd termius-mcp
+py -3.12 -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.lock
+```
+
+**Enable Termius access.** Quit Termius first (also from the tray icon), then:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Termius\Termius.exe" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
+Get-NetTCPConnection -LocalPort 9222 -State Listen | Select-Object LocalAddress, OwningProcess
+```
+
+Continue only if `LocalAddress` is `127.0.0.1`. To close the port, quit Termius
+(including the tray icon) and start it normally. The security notes above apply
+unchanged: any local process can use the open port.
+
+**Register with Claude Code manually** (the plugin needs no paths):
+
+```powershell
+claude mcp add termius -s user -e TERMIUS_CDP_PORT=9222 -e TERMIUS_HOSTKEY=ask -- C:\path\to\termius-mcp\.venv\Scripts\python.exe C:\path\to\termius-mcp\server.py
+```
+
+For Codex, use the same two paths in `codex-mcp.toml.example`, written with forward
+slashes or doubled backslashes inside the TOML strings.
+
+**What differs on Windows**
+
+- The running Termius must report **10.4.1**; macOS keeps its 9.38.1 pin. Only the
+  primary window of the per-user install (`%LOCALAPPDATA%\Programs\Termius`, or
+  `TERMIUS_APP_DIR`) is accepted.
+- Claims and locks live in `%LOCALAPPDATA%\termius-mcp\locks` (override with
+  `TERMIUS_LOCK_DIR`). Windows has no mode bits: the directory relies on the user
+  profile's ACL, and a symlink or junction in its place is refused. Locks are
+  Windows file locks, released by the OS when a process dies.
+- `TERMIUS_UPLOAD_ROOTS` entries are separated by `;`, not `:`.
+- Besides the credential stores listed above, uploads from Termius' own data and
+  Windows credential stores under `%APPDATA%` / `%LOCALAPPDATA%` (Credential Manager,
+  DPAPI keys, gcloud, GitHub CLI, …) are refused.
+- Local SFTP paths are drive paths (`C:\Users\me\file.txt`); remote ones stay POSIX.
+
+**Validation status.** The offline Python and JavaScript suites pass on Windows, and the
+server starts and lists its tools over stdio. Whether the renderer bridge matches
+Termius 10.4.1's internal React/xterm/transfer-queue structures has to be confirmed
+against the running app; see [validation scope](docs/VALIDATION.md).
+
 ## Development and validation
 
 Offline tests do not require Termius, a debug port, credentials, or a remote host:
@@ -239,8 +298,10 @@ npm ci --ignore-scripts
 npm test
 ```
 
-The [CI workflow](.github/workflows/tests.yml) runs both suites on macOS, then builds
-the wheel, installs it outside the checkout and checks the advertised tools.
+On Windows use `.venv\Scripts\python` instead of `.venv/bin/python`.
+
+The [CI workflow](.github/workflows/tests.yml) runs both suites on macOS and Windows,
+then builds the wheel, installs it outside the checkout and checks the advertised tools.
 
 JavaScript tests use the real `@xterm/headless@5.5.0` buffer/parser; Termius
 React/Redux objects and transfer streams are test doubles. See
